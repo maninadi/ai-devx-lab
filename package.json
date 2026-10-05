@@ -2,14 +2,15 @@
   "name": "system-info",
   "version": "1.0.0",
   "private": true,
-  "description": "A minimal TypeScript script that prints system information.",
+  "description": "A TypeScript learning lab with pricing, notifications, and agent exercises.",
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && node dist/system-info.js",
+    "start": "npm run build && node dist/src/system-info.js",
+    "test": "npm run build && node --test dist/tests/pricing.test.js",
     "check": "tsc --noEmit"
   },
   "devDependencies": {
