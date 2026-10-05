@@ -1,0 +1,19 @@
+{
+  "name": "system-info",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A minimal TypeScript script that prints system information.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "npm run build && node dist/system-info.js",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
