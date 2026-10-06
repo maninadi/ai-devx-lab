@@ -1,0 +1,12 @@
+[project]
+name = "ai-devx-lab"
+version = "0.1.0"
+description = "A Python learning lab for AI-native developer tools and agent systems."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

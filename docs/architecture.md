@@ -1,15 +1,24 @@
 # Architecture
 
-This TypeScript learning lab targets Node.js 22 or newer.
+This Python learning lab requires Python 3.10 or newer and has no third-party dependencies.
 
-- `src/pricing/pricing.ts` calculates totals according to `pricing-rules.md`,
-  without I/O or input mutation.
-- `src/notifications/email.ts` formats messages; callers handle delivery.
-- `src/system-info.ts` is the original standalone system-information script.
-- `tests/pricing.test.ts` uses Node's built-in test runner.
-- `learning/` contains starter exercises for days 1–3, based on the requested
-  titles rather than the unavailable linked conversation.
+- `src/pricing/pricing.py` contains pure pricing helpers.
+- `src/notifications/email.py` formats typed dictionaries; callers handle delivery.
+- `src/system_info.py` prints host information. Memory and uptime use Linux `/proc`;
+  those fields display `unavailable` on unsupported systems.
+- `tests/test_pricing.py` uses the standard-library `unittest` runner.
 
-TypeScript compiles source and tests into `dist/`, preserving directories.
-`npm start` runs `dist/src/system-info.js`; `npm test` runs the compiled tests.
-There are no runtime dependencies, external services, or databases.
+Run `python3 -m unittest discover -s tests -v` from the repository root.
+There is no compilation step, database, or external service.
+
+## Existing pricing discrepancy
+
+The tier policy in `pricing-rules.md` specifies standard 0%, silver 5%, gold 15%.
+The migrated `calculate_discount` preserves the original implementation: gold 10%,
+all other tiers 0%. Its regression test verifies migration parity, not policy compliance.
+
+The original tests referenced an absent `calculatePrice` function. The migration
+adds `calculate_price` to support their percentage-based contract: integer cents,
+positive quantities, safe integer arithmetic bounded by 2**53 - 1, and a finite
+0–100% discount rounded once with positive half-up rounding.
+This separate helper does not implement customer-tier policy.
