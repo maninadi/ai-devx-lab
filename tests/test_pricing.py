@@ -72,6 +72,5 @@ class PricingTests(unittest.TestCase):
             ), 0)
         provider.get_discount_rate.assert_not_called()
 
-
 if __name__ == "__main__":
     unittest.main()
