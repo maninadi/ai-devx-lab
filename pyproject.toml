@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "A Python learning lab for AI-native developer tools and agent systems."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "openai>=3.29.0",
+]
 
 [dependency-groups]
 dev = [

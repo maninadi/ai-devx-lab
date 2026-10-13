@@ -11,6 +11,20 @@ AI agent systems.
 
 3. Prompts guide behavior; controls enforce boundaries.
 
+## Learning notes
+
+- [Day 1 — Agent Loop](learning/day-01-agent-loop.md) — ✅ Complete
+- [Day 2 — Context Engineering](learning/day-02-context-engineering.md) — ✅ Complete
+- [Day 3 — Instruction Architecture](learning/day-03-instruction-architecture.md) — ✅ Complete
+- [Day 4 — Prompt Contracts](learning/day-04-prompt-contracts.md) — ✅ Complete
+- [Day 5 — Planning and State](learning/day-05-planning-and-state.md) — ✅ Complete
+- [Day 6 — Verification](learning/day-06-verification.md) — ✅ Complete
+- [Day 7 — Week One Integration](learning/day-07-week-one-integration.md) — ✅ Complete
+- [Day 8 — Building Our First Python Agent](learning/day-08-agent-loop.md) — ✅ Complete
+- [Day 9 — Model Adapters and Agent State](learning/day-09-model-adapters-and-agent-state.md) — ⏳ Upcoming
+
+See the [curriculum overview](learning/README.md) for the learning log.
+
 ## Python setup
 
 Requires Python 3.10 or newer. No dependencies need installing.

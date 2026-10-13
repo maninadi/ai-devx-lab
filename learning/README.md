@@ -9,12 +9,12 @@ are progressively incorporated into the `ai-devx-lab` platform.
 
 ## Progress
 
-**Current curriculum day:** Day 4  
-**Completed:** 3 / 168  
-**In progress:** Day 4  
+**Current curriculum day:** Day 8\
+**Completed:** 8 / 168\
+**In progress:** None\
 **Current phase:** Coding Agent Foundations
 
-Day 4 study is complete. Hands-on work continues next session.
+Days 1–8 are complete. Day 9 is next.
 
 ---
 
@@ -41,8 +41,12 @@ Day 4 study is complete. Hands-on work continues next session.
 | 1 | Coding Agent Architecture | Agent quality ≠ model quality | [Day 1](day-01-agent-loop.md) | ✅ Complete |
 | 2 | Context Engineering | Available information ≠ active context | [Day 2](day-02-context-engineering.md) | ✅ Complete |
 | 3 | Instruction Architecture | Authority, scope and relevance | [Day 3](day-03-instruction-architecture.md) | ✅ Complete |
-| 4 | Prompt Contracts | Define observable success and evidence | [Day 4](day-04-prompt-contracts.md) | 🟡 Study complete |
-| 5 | Task Decomposition & Planning | — | — | ⏳ Upcoming |
+| 4 | Prompt Contracts | Define observable success and evidence | [Day 4](day-04-prompt-contracts.md) | ✅ Complete |
+| 5 | Task Decomposition & Planning | — | [Day 5](day-05-planning-and-state.md) | ✅ Complete |
+| 6 | Verification, Evidence, and Agent Termination | — | [Day 6](day-06-verification.md) | ✅ Complete |
+| 7 | Week 1 Integration | — | [Day 7](day-07-week-one-integration.md) | ✅ Complete |
+| 8 | Building Our First Python Agent | — | [Day 8](day-08-agent-loop.md) | ✅ Complete |
+| 9 | Model Adapters and Agent State | — | [Day 9](day-09-model-adapters-and-agent-state.md) | ⏳ Upcoming |
 
 ---
 
@@ -179,28 +183,4 @@ reasoning but should not automatically acquire instruction authority.
 
 # Current Work
 
-## Day 4 — Prompt Contracts
-
-**Status:** 🟡 Study complete; hands-on pending.
-
-Next session begins directly with the Day 4 experiments:
-
-    Activity prompt
-          vs
-    Procedural prompt
-          vs
-    Outcome contract
-
-The goal is to understand:
-
-    Intent
-       ↓
-    Constraints
-       ↓
-    Success criteria
-       ↓
-    Evidence
-       ↓
-    Verification
-       ↓
-    Definition of done
+Days 1–8 are complete. Day 9 is next.
