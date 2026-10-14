@@ -79,6 +79,3 @@ How did the model continue after a tool call?
 
 What is missing for production use?
 
-## Reflection
-
-...

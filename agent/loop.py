@@ -2,9 +2,12 @@ import json
 import os
 from pathlib import Path
 
+from time import perf_counter
+
 from openai import OpenAI
 
 from agent.tools import execute_tool
+from agent.trace import RunTrace
 
 
 TOOLS = [
@@ -69,104 +72,191 @@ def run_agent(
     task: str,
     repo_root: Path,
     max_turns: int = 6,
+    client=None,
+    trace_dir: Path | None = None,
 ) -> str:
 
-    client = OpenAI(
-        timeout=30.0,
-        max_retries=1,
-    )
+    if client is None:
+        client = OpenAI(
+            timeout=30.0,
+            max_retries=1,
+        )
 
     model = os.getenv(
         "OPENAI_MODEL",
         "gpt-4.1-mini",
     )
 
+    trace = RunTrace(
+        trace_dir or repo_root / ".agent-traces"
+    )
+
     previous_response_id = None
     next_input = task
 
-    for turn in range(1, max_turns + 1):
+    trace.emit(
+        "run_started",
+        model=model,
+        max_turns=max_turns,
+    )
 
-        print(f"\n[agent] Turn {turn}")
+    print(f"[trace] Run ID: {trace.run_id}")
+    print(f"[trace] File: {trace.path}")
 
-        request = {
-            "model": model,
-            "instructions": INSTRUCTIONS,
-            "input": next_input,
-            "tools": TOOLS,
-            "tool_choice": (
-                "required" if turn == 1 else "auto"
-            ),
-            "max_output_tokens": 1600,
-            "store": True,
-        }
+    try:
+        for turn in range(1, max_turns + 1):
 
-        if previous_response_id is not None:
-            request["previous_response_id"] = (
-                previous_response_id
+            trace.emit(
+                "model_request",
+                turn=turn,
+                previous_response_id=previous_response_id,
             )
 
-        response = client.responses.create(**request)
+            request = {
+                "model": model,
+                "instructions": INSTRUCTIONS,
+                "input": next_input,
+                "tools": TOOLS,
+                "tool_choice": (
+                    "required" if turn == 1 else "auto"
+                ),
+                "max_output_tokens": 1600,
+                "store": True,
+            }
 
-        if response.status != "completed":
-            raise RuntimeError(
-                f"Model response status: {response.status}"
-            )
-
-        calls = [
-            item
-            for item in response.output
-            if item.type == "function_call"
-        ]
-
-        if calls:
-            results = []
-
-            for call in calls:
-
-                print(
-                    f"[agent] Requested tool: {call.name}"
+            if previous_response_id:
+                request["previous_response_id"] = (
+                    previous_response_id
                 )
 
-                try:
-                    arguments = json.loads(call.arguments)
-                except (ValueError, TypeError):
-                    result = {
-                        "ok": False,
-                        "error": "Invalid JSON arguments",
-                    }
-                else:
-                    result = execute_tool(
-                        name=call.name,
-                        arguments=arguments,
-                        repo_root=repo_root,
+            started = perf_counter()
+
+            response = client.responses.create(
+                **request
+            )
+
+            duration_ms = round(
+                (perf_counter() - started) * 1000,
+                2,
+            )
+
+            usage = getattr(
+                response,
+                "usage",
+                None,
+            )
+
+            trace.emit(
+                "model_response",
+                turn=turn,
+                response_id=response.id,
+                status=response.status,
+                duration_ms=duration_ms,
+                input_tokens=(
+                    getattr(usage, "input_tokens", None)
+                ),
+                output_tokens=(
+                    getattr(usage, "output_tokens", None)
+                ),
+            )
+
+            if response.status != "completed":
+                raise RuntimeError(
+                    f"Model status: {response.status}"
+                )
+
+            calls = [
+                item
+                for item in response.output
+                if item.type == "function_call"
+            ]
+
+            if calls:
+
+                results = []
+
+                for call in calls:
+
+                    trace.emit(
+                        "tool_requested",
+                        turn=turn,
+                        tool=call.name,
+                        call_id=call.call_id,
                     )
 
-                print(
-                    f"[agent] Tool succeeded: "
-                    f"{result.get('ok', False)}"
+                    try:
+                        arguments = json.loads(
+                            call.arguments
+                        )
+
+                        result = execute_tool(
+                            name=call.name,
+                            arguments=arguments,
+                            repo_root=repo_root,
+                        )
+
+                    except (ValueError, TypeError):
+                        result = {
+                            "ok": False,
+                            "error": "Invalid arguments",
+                        }
+
+                    except Exception:
+                        result = {
+                            "ok": False,
+                            "error": "Tool execution failed",
+                        }
+
+                    output = json.dumps(result)
+
+                    trace.emit(
+                        "tool_completed",
+                        turn=turn,
+                        tool=call.name,
+                        call_id=call.call_id,
+                        success=result.get("ok", False),
+                        output_bytes=len(
+                            output.encode("utf-8")
+                        ),
+                    )
+
+                    results.append({
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": output,
+                    })
+
+                previous_response_id = response.id
+                next_input = results
+
+                continue
+
+            answer = response.output_text.strip()
+
+            if answer:
+
+                trace.emit(
+                    "run_finished",
+                    status="completed",
+                    turns=turn,
                 )
 
-                results.append({
-                    "type": "function_call_output",
-                    "call_id": call.call_id,
-                    "output": json.dumps(result),
-                })
+                return answer
 
-            previous_response_id = response.id
-            next_input = results
-
-            continue
-
-        answer = response.output_text.strip()
-
-        if answer:
-            print("[agent] Final response")
-            return answer
+            raise RuntimeError(
+                "Model completed without a final answer"
+            )
 
         raise RuntimeError(
-            "Model completed without a final answer"
+            "Maximum agent turns exceeded"
         )
 
-    raise RuntimeError(
-        "Maximum agent turns exceeded"
-    )
+    except Exception as exc:
+
+        trace.emit(
+            "run_finished",
+            status="failed",
+            error_type=type(exc).__name__,
+        )
+
+        raise
