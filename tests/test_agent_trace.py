@@ -115,3 +115,12 @@ def test_agent_records_execution_trace(tmp_path):
         "Gold discount: 15%"
         not in trace_files[0].read_text()
     )
+
+    tool_outputs = (
+        client.responses.requests[1]["input"]
+    )
+
+    assert all(
+        len(item["output"]) <= 3500
+        for item in tool_outputs
+    )
