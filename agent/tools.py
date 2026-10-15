@@ -1,6 +1,10 @@
 import os
 from pathlib import Path
 
+from agent.evidence import (
+    search_repository,
+    read_file_range,
+)
 
 ALLOWED_EXTENSIONS = {
     ".py",
@@ -110,10 +114,11 @@ def read_file(repo_root: Path, relative_path: str) -> dict:
         "content": content,
     }
 
-def execute_tool( name: str,
-    arguments: dict,
-    repo_root: Path
-) -> dict:
+
+def execute_tool(name: str,
+                 arguments: dict,
+                 repo_root: Path
+                 ) -> dict:
 
     if not isinstance(arguments, dict):
         return {"ok": False, "error": "Invalid arguments"}
@@ -129,5 +134,12 @@ def execute_tool( name: str,
             return {"ok": False, "error": "Expected path only"}
 
         return read_file(repo_root, arguments["path"])
+
+    if name == "search_repository":
+        return search_repository(repo_root=repo_root, query=arguments.get("query", ""))
+
+    if name == "read_file_range":
+        return read_file_range(repo_root=repo_root, path=arguments.get("path", ""),
+                               start_line=arguments.get("start_line"), end_line=arguments.get("end_line"))
 
     return {"ok": False, "error": "Unknown tool"}

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from agent.tools import execute_tool
 
 
@@ -45,3 +47,14 @@ def test_reject_hidden_file(tmp_path):
     )
 
     assert not result["ok"]
+
+
+def test_search_repository_returns_matches():
+
+    result = execute_tool(
+        name="search_repository",
+        arguments={"query": "Gold"},
+        repo_root=Path.cwd(),
+    )
+
+    print(result)

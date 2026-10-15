@@ -46,6 +46,46 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "type": "function",
+        "name": "search_repository",
+        "description": (
+            "Search repository source and documentation for literal text. "
+            "Returns file paths, matching line numbers, and short previews. "
+            "Use before reading full files when locating evidence."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Literal search text, maximum 100 characters",
+                }
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "read_file_range",
+        "description": (
+            "Read 1 to 40 numbered lines from a repository file. "
+            "Use line numbers discovered through search_repository."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "start_line": {"type": "integer"},
+                "end_line": {"type": "integer"},
+            },
+            "required": ["path", "start_line", "end_line"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
