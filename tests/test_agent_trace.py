@@ -20,9 +20,11 @@ class FakeResponses:
 
             tool_call = SimpleNamespace(
                 type="function_call",
-                name="read_file",
+                name="read_file_range",
                 arguments=json.dumps({
-                    "path": "pricing.md"
+                    "path": "pricing.md",
+                    "start_line": 1,
+                    "end_line": 1,
                 }),
                 call_id="call_001",
             )
@@ -42,11 +44,11 @@ class FakeResponses:
             id="resp_002",
             status="completed",
             output=[],
-            output_text="Gold discount is 15%.",
-            usage=SimpleNamespace(
-                input_tokens=150,
-                output_tokens=30,
+            output_text=(
+                "- Gold customers receive a 15% discount. "
+                "[[pricing.md:L1-L1]]"
             ),
+            usage=None,
         )
 
 
@@ -77,6 +79,7 @@ def test_agent_records_execution_trace(tmp_path):
     )
 
     assert "15%" in answer
+    assert "[[pricing.md:L1-L1]]" in answer
 
     trace_files = list(
         trace_dir.glob("*.jsonl")
@@ -100,8 +103,10 @@ def test_agent_records_execution_trace(tmp_path):
     assert "tool_requested" in event_types
     assert "tool_completed" in event_types
     assert "run_finished" in event_types
+    assert "evidence_recorded" in event_types
+    assert "final_reviewed" in event_types
 
-    assert events[-1]["status"] == "completed"
+    assert events[-1]["status"] == "cited"
 
     assert (
         client.responses.requests[1]
