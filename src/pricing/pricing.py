@@ -3,6 +3,8 @@ from typing import Literal
 
 from .enterprise import EnterprisePricingProvider
 
+GOLD_DISCOUNT = 0.15
+
 CustomerTier = Literal["standard", "silver", "gold", "enterprise"]
 
 
