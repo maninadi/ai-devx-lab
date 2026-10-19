@@ -12,6 +12,7 @@ from agent.context import ContextPolicy, ToolContextBudget
 from agent.evidence_ledger import EvidenceLedger
 from agent.claim_review import LiteralFactIndex
 from agent.week2_review import (FinalStatus, FinalReview, tool_choice_for_turn, review_final_answer)
+from agent.tool_recovery import run_tool_safely
 
 
 TOOLS = [
@@ -262,6 +263,35 @@ When tool access is no longer available:
 Never manufacture facts merely to satisfy
 the required output format.
 
+Tool failure recovery policy:
+
+Tool results may contain:
+
+- ok: false
+- error.code
+- recovery
+
+When recovery is "replan":
+
+- Do not repeat the identical failed request
+  without a reason.
+- Check the error category.
+- Search for an alternative valid path or approach.
+- If sufficient evidence cannot be obtained,
+  explicitly abstain.
+
+When recovery is "stop":
+
+- Do not request further tools.
+- Use only evidence already collected.
+- Return a valid cited answer if justified.
+- Otherwise return an explicit ABSTAIN response.
+
+Do not treat failed tool results as source evidence.
+
+Never claim a tool succeeded unless its result
+confirms success.
+
 """
 
 
@@ -298,6 +328,23 @@ def run_agent(
     evidence_ledger = EvidenceLedger()
     literal_index = LiteralFactIndex()
 
+    def dispatch_tool(name: str, arguments: dict):
+
+        if name == "review_constant":
+
+            return literal_index.review(
+                name=arguments.get("name"),
+                expected_literal=arguments.get(
+                    "expected_literal"
+                ),
+            )
+
+        return execute_tool(
+            name=name,
+            arguments=arguments,
+            repo_root=repo_root,
+        )
+
     previous_response_id = None
     next_input = task
 
@@ -311,6 +358,7 @@ def run_agent(
     print(f"[trace] File: {trace.path}")
 
     try:
+        force_final = False
         for turn in range(1, max_turns + 1):
 
             trace.emit(
@@ -324,10 +372,10 @@ def run_agent(
                 "instructions": INSTRUCTIONS,
                 "input": next_input,
                 "tools": TOOLS,
-                "tool_choice": tool_choice_for_turn(
+                "tool_choice": ("none" if force_final else tool_choice_for_turn(
                     turn=turn,
                     max_turns=max_turns,
-                ),
+                )),
                 "max_output_tokens": 1600,
                 "store": True,
             }
@@ -396,14 +444,38 @@ def run_agent(
                         arguments = json.loads(
                             call.arguments
                         )
-                        if call.name == "review_constant":
+                        outcome = run_tool_safely(
+                            name=call.name,
+                            raw_arguments=call.arguments,
+                            dispatch=dispatch_tool,
+                            max_attempts=2,
+                        )
+                        result = outcome.result
+                        force_final = (outcome.decision == "stop")
+                        for event in outcome.events:
 
-                            result = literal_index.review(
-                                name=arguments.get("name"),
-                                expected_literal=arguments.get(
-                                    "expected_literal"
+                            trace.emit(
+                                event["event"],
+                                turn=turn,
+                                tool_name=call.name,
+                                call_id=call.call_id,
+                                attempt=event["attempt"],
+                                error_code=event.get(
+                                    "error_code"
                                 ),
                             )
+
+                        trace.emit(
+                            "tool_recovery_decided",
+                            turn=turn,
+                            tool_name=call.name,
+                            call_id=call.call_id,
+                            decision=outcome.decision,
+                            attempts=outcome.attempts,
+                        )
+
+                        if call.name == "review_constant":
+
                             trace.emit(
                                 "claim_reviewed",
                                 turn=turn,
@@ -414,12 +486,6 @@ def run_agent(
                                     "evidence_total",
                                     0,
                                 ),
-                            )
-                        else:
-                            result = execute_tool(
-                                name=call.name,
-                                arguments=arguments,
-                                repo_root=repo_root,
                             )
 
                     except (ValueError, TypeError):
