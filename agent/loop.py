@@ -13,6 +13,7 @@ from agent.evidence_ledger import EvidenceLedger
 from agent.claim_review import LiteralFactIndex
 from agent.week2_review import (FinalStatus, FinalReview, tool_choice_for_turn, review_final_answer)
 from agent.tool_recovery import run_tool_safely
+from agent.execution_budget import BudgetPolicy, BudgetDecision, ExecutionBudget
 
 
 TOOLS = [
@@ -327,6 +328,14 @@ def run_agent(
 
     evidence_ledger = EvidenceLedger()
     literal_index = LiteralFactIndex()
+    execution_budget = ExecutionBudget(
+        BudgetPolicy(
+            max_tool_calls=8,
+            max_repeats=2,
+            max_seconds=90,
+            finalization_reserve_seconds=15,
+        )
+    )
 
     def dispatch_tool(name: str, arguments: dict):
 
@@ -366,6 +375,29 @@ def run_agent(
                 turn=turn,
                 previous_response_id=previous_response_id,
             )
+
+            if execution_budget.expired():
+                trace.emit(
+                    "budget_exhausted",
+                    turns=turn,
+                    reason="deadline_exceeded",
+                    calls_used=execution_budget.calls_used
+                )
+
+                trace.emit(
+                    "run_finished",
+                    status="abstained",
+                    reason="deadline_exceeded",
+                    turns=turn - 1,
+                )
+                return (
+                    "ABSTAIN: The execution deadline "
+                    "was reached before the investigation "
+                    "could be completed."
+                )
+
+            if execution_budget.should_finalize():
+                force_final = True
 
             request = {
                 "model": model,
@@ -444,49 +476,80 @@ def run_agent(
                         arguments = json.loads(
                             call.arguments
                         )
-                        outcome = run_tool_safely(
+
+                        decision = execution_budget.admit(
                             name=call.name,
                             raw_arguments=call.arguments,
-                            dispatch=dispatch_tool,
-                            max_attempts=2,
                         )
-                        result = outcome.result
-                        force_final = (outcome.decision == "stop")
-                        for event in outcome.events:
-
-                            trace.emit(
-                                event["event"],
-                                turn=turn,
-                                tool_name=call.name,
-                                call_id=call.call_id,
-                                attempt=event["attempt"],
-                                error_code=event.get(
-                                    "error_code"
-                                ),
-                            )
 
                         trace.emit(
-                            "tool_recovery_decided",
+                            "budget_checked",
                             turn=turn,
                             tool_name=call.name,
                             call_id=call.call_id,
-                            decision=outcome.decision,
-                            attempts=outcome.attempts,
+                            allowed=decision.allowed,
+                            reason=decision.reason,
+                            calls_used=decision.calls_used,
                         )
 
-                        if call.name == "review_constant":
+                        if not decision.allowed:
+                            result = {
+                                "ok": False,
+                                "error": {
+                                    "code": decision.reason,
+                                    "message": (
+                                        "Tool execution was blocked by the application budget"
+                                    ),
+                                },
+                                "recovery": "stop",
+                            }
+
+                            force_final = True
+
+                        else:
+                            outcome = run_tool_safely(
+                                name=call.name,
+                                raw_arguments=call.arguments,
+                                dispatch=dispatch_tool,
+                                max_attempts=2,
+                            )
+                            result = outcome.result
+                            force_final = (outcome.decision == "stop")
+                            for event in outcome.events:
+
+                                trace.emit(
+                                    event["event"],
+                                    turn=turn,
+                                    tool_name=call.name,
+                                    call_id=call.call_id,
+                                    attempt=event["attempt"],
+                                    error_code=event.get(
+                                        "error_code"
+                                    ),
+                                )
 
                             trace.emit(
-                                "claim_reviewed",
+                                "tool_recovery_decided",
                                 turn=turn,
+                                tool_name=call.name,
                                 call_id=call.call_id,
-                                name=arguments.get("name"),
-                                status=result.get("status"),
-                                evidence_count=result.get(
-                                    "evidence_total",
-                                    0,
-                                ),
+                                decision=outcome.decision,
+                                attempts=outcome.attempts,
                             )
+
+                            if call.name == "review_constant":
+
+                                trace.emit(
+                                    "claim_reviewed",
+                                    turn=turn,
+                                    call_id=call.call_id,
+                                    name=arguments.get("name"),
+                                    status=result.get("status"),
+                                    evidence_count=result.get(
+                                        "evidence_total",
+                                        0,
+                                    ),
+                                )
 
                     except (ValueError, TypeError):
                         result = {
