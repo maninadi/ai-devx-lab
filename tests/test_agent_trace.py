@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,15 +11,24 @@ from agent.loop import run_agent
 
 class FakeResponses:
 
-    def __init__(self, tool_requests=1, final_answer=None):
+    def __init__(self, tool_requests=1, final_answer=None, usages=None):
         self.requests = []
         self.counter = 0
         self.tool_requests = tool_requests
         self.final_answer = final_answer
+        self.usages = usages
 
     def create(self, **kwargs):
         self.requests.append(kwargs)
         self.counter += 1
+        usage_fields = {
+            "usage": (
+                self.usages[self.counter - 1] if self.usages is not None
+                else realistic_usage(100 * self.counter, 20, 20 * self.counter, 5)
+            )
+        }
+        if usage_fields["usage"] is None:
+            usage_fields = {}
 
         if self.counter <= self.tool_requests:
 
@@ -38,10 +48,7 @@ class FakeResponses:
                 status="completed",
                 output=[tool_call],
                 output_text="",
-                usage=SimpleNamespace(
-                    input_tokens=100,
-                    output_tokens=20,
-                ),
+                **usage_fields,
             )
 
         return SimpleNamespace(
@@ -52,14 +59,24 @@ class FakeResponses:
                 "- Gold customers receive a 15% discount. "
                 "[[pricing.md:L1-L1]]"
             ),
-            usage=None,
+            **usage_fields,
         )
 
 
 class FakeClient:
 
-    def __init__(self, tool_requests=1, final_answer=None):
-        self.responses = FakeResponses(tool_requests, final_answer)
+    def __init__(self, tool_requests=1, final_answer=None, usages=None):
+        self.responses = FakeResponses(tool_requests, final_answer, usages)
+
+
+def realistic_usage(input_tokens, cached_tokens, output_tokens, reasoning_tokens):
+    return SimpleNamespace(
+        input_tokens=input_tokens,
+        input_tokens_details=SimpleNamespace(cached_tokens=cached_tokens),
+        output_tokens=output_tokens,
+        output_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
+        total_tokens=input_tokens + output_tokens,
+    )
 
 
 def test_agent_records_execution_trace(tmp_path):
@@ -133,6 +150,18 @@ def test_agent_records_execution_trace(tmp_path):
         len(item["output"]) <= 3500
         for item in tool_outputs
     )
+    usage_events = [event for event in events if event["event"] == "model_usage_recorded"]
+    assert [event["response_id"] for event in usage_events] == ["resp_001", "resp_002"]
+    assert [event["status"] for event in usage_events] == ["recorded", "recorded"]
+    assert [
+        (event["input_tokens"], event["cached_input_tokens"], event["output_tokens"])
+        for event in usage_events
+    ] == [(100, 20, 20), (300, 40, 60)]
+    assert [Decimal(event["incremental_cost_usd"]) for event in usage_events] == [
+        Decimal("0.000066"), Decimal("0.000138"),
+    ]
+    assert Decimal(usage_events[-1]["cumulative_cost_usd"]) == Decimal("0.000204")
+    assert usage_events[-1]["unknown_usage_count"] == 0
 
 
 def test_agent_retries_tool_timeout(tmp_path, monkeypatch):
@@ -284,3 +313,70 @@ def test_agent_blocks_third_identical_request(tmp_path, monkeypatch, final_answe
             for event in events
         )
         assert events[-1]["status"] == "cited"
+
+
+@pytest.mark.parametrize("final_answer, expected_status", [
+    ("- Gold discount: 15%. [[pricing.md:L1-L1]]", "cited"),
+    ("ABSTAIN: Further evidence cannot be collected.", "abstained"),
+    ("- Gold discount: 15%. [[pricing.md:L2-L2]]", "unverified"),
+    ("Gold discount: 15%.", "unverified"),
+])
+def test_cost_limit_preserves_final_gate(tmp_path, monkeypatch, final_answer, expected_status):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "pricing.md").write_text("Gold discount: 15%")
+    trace_dir = tmp_path / "traces"
+    client = FakeClient(tool_requests=2, final_answer=final_answer)
+    calls = []
+    execute_tool = agent_loop.execute_tool
+
+    def dispatch(**kwargs):
+        calls.append(client.responses.counter)
+        return execute_tool(**kwargs)
+
+    monkeypatch.setattr(agent_loop, "execute_tool", dispatch)
+    answer = run_agent(
+        task="Explain Gold discounts", repo_root=repo_root,
+        client=client, trace_dir=trace_dir,
+        max_cost_usd=Decimal("0.0002"), cost_reserve_usd=Decimal("0"),
+    )
+    assert calls == [1]
+    assert len(client.responses.requests) == 3
+    assert client.responses.requests[-1]["tool_choice"] == "none"
+    blocked_outputs = client.responses.requests[-1]["input"]
+    assert len(blocked_outputs) == 1
+    blocked = json.loads(blocked_outputs[0]["output"])
+    assert blocked["ok"] is False
+    assert blocked["error"]["code"] == "cost_budget_reached"
+    events = [json.loads(line) for line in next(trace_dir.glob("*.jsonl")).read_text().splitlines()]
+    assert any(event["event"] == "cost_budget_reached" and event["turn"] == 2 for event in events)
+    assert any(event["event"] == "cost_budget_blocked_tool" and event["call_id"] == "call_002" for event in events)
+    review = next(event for event in events if event["event"] == "final_reviewed")
+    assert review["status"] == expected_status
+    assert review["accepted"] is (expected_status != "unverified")
+    assert events[-1]["status"] == expected_status
+    if expected_status == "unverified":
+        assert answer.startswith("ABSTAIN:")
+        assert answer != final_answer
+    else:
+        assert answer == final_answer
+
+
+def test_missing_usage_works_in_observation_only_mode(tmp_path):
+    (tmp_path / "pricing.md").write_text("Gold discount: 15%")
+    trace_dir = tmp_path / "traces"
+    client = FakeClient(usages=[None, None])
+    answer = run_agent(
+        task="Explain Gold discounts", repo_root=tmp_path,
+        client=client, trace_dir=trace_dir, max_cost_usd=None,
+    )
+    assert answer == "- Gold customers receive a 15% discount. [[pricing.md:L1-L1]]"
+    events = [json.loads(line) for line in next(trace_dir.glob("*.jsonl")).read_text().splitlines()]
+    usage_events = [event for event in events if event["event"] == "model_usage_recorded"]
+    assert len(usage_events) == 2
+    assert [event["status"] for event in usage_events] == ["missing_usage", "missing_usage"]
+    assert [event["unknown_usage_count"] for event in usage_events] == [1, 2]
+    assert all(event["incremental_cost_usd"] is None for event in usage_events)
+    assert not any(event["event"] == "cost_budget_reached" for event in events)
+    assert any(event["event"] == "tool_completed" and event["success"] for event in events)
+    assert events[-1]["status"] == "cited"

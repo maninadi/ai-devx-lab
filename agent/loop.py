@@ -1,7 +1,7 @@
 import json
 import os
 from pathlib import Path
-
+from decimal import Decimal
 from time import perf_counter
 
 from openai import OpenAI
@@ -14,7 +14,7 @@ from agent.claim_review import LiteralFactIndex
 from agent.week2_review import (FinalStatus, FinalReview, tool_choice_for_turn, review_final_answer)
 from agent.tool_recovery import run_tool_safely
 from agent.execution_budget import BudgetPolicy, BudgetDecision, ExecutionBudget
-
+from agent.cost_accounting import CostLedger, TokenRates
 
 TOOLS = [
     {
@@ -302,6 +302,8 @@ def run_agent(
     max_turns: int = 12,
     client=None,
     trace_dir: Path | None = None,
+    max_cost_usd: Decimal | None = Decimal("0.02"),
+    cost_reserve_usd: Decimal = Decimal("0.005"),
 ) -> str:
 
     if client is None:
@@ -335,6 +337,14 @@ def run_agent(
             max_seconds=90,
             finalization_reserve_seconds=15,
         )
+    )
+    cost_ledger = CostLedger(
+        model="gpt-4.1-mini",
+        rates=TokenRates(
+            input_per_million=Decimal("0.40"),
+            cached_input_per_million=Decimal("0.10"),
+            output_per_million=Decimal("1.60"),
+        ),
     )
 
     def dispatch_tool(name: str, arguments: dict):
@@ -422,6 +432,58 @@ def run_agent(
             response = client.responses.create(
                 **request
             )
+            usage_status, incremental_cost = (
+                cost_ledger.record(response)
+            )
+
+            trace.emit(
+                "model_usage_recorded",
+                turn=turn,
+                response_id=getattr(
+                    response,
+                    "id",
+                    None,
+                ),
+                status=usage_status,
+                incremental_cost_usd=(
+                    str(incremental_cost)
+                    if incremental_cost is not None
+                    else None
+                ),
+                cumulative_cost_usd=str(
+                    cost_ledger.estimated_cost_usd
+                ),
+                input_tokens=cost_ledger.input_tokens,
+                cached_input_tokens=(
+                    cost_ledger.cached_input_tokens
+                ),
+                output_tokens=cost_ledger.output_tokens,
+                unknown_usage_count=(
+                    cost_ledger.unknown_usage_count
+                ),
+            )
+
+            cost_limit_reached = (
+                cost_ledger.should_finalize(
+                    max_cost_usd=max_cost_usd,
+                    reserve_usd=cost_reserve_usd,
+                )
+            )
+
+            if cost_limit_reached:
+
+                force_final = True
+
+                trace.emit(
+                    "cost_budget_reached",
+                    turn=turn,
+                    estimated_cost_usd=str(
+                        cost_ledger.estimated_cost_usd
+                    ),
+                    unknown_usage_count=(
+                        cost_ledger.unknown_usage_count
+                    ),
+                )
 
             duration_ms = round(
                 (perf_counter() - started) * 1000,
@@ -464,104 +526,124 @@ def run_agent(
                 results = []
 
                 for call in calls:
+                    if cost_limit_reached:
 
-                    trace.emit(
-                        "tool_requested",
-                        turn=turn,
-                        tool=call.name,
-                        call_id=call.call_id,
-                    )
-
-                    try:
-                        arguments = json.loads(
-                            call.arguments
-                        )
-
-                        decision = execution_budget.admit(
-                            name=call.name,
-                            raw_arguments=call.arguments,
-                        )
+                        result = {
+                            "ok": False,
+                            "error": {
+                                "code": "cost_budget_reached",
+                                "message": (
+                                    "Further tool execution is "
+                                    "disabled by the application."
+                                ),
+                            },
+                            "recovery": "stop",
+                        }
 
                         trace.emit(
-                            "budget_checked",
+                            "cost_budget_blocked_tool",
                             turn=turn,
-                            tool_name=call.name,
                             call_id=call.call_id,
-                            allowed=decision.allowed,
-                            reason=decision.reason,
-                            calls_used=decision.calls_used,
+                            tool_name=call.name,
+                        )
+                    else:
+                        trace.emit(
+                            "tool_requested",
+                            turn=turn,
+                            tool=call.name,
+                            call_id=call.call_id,
                         )
 
-                        if not decision.allowed:
-                            result = {
-                                "ok": False,
-                                "error": {
-                                    "code": decision.reason,
-                                    "message": (
-                                        "Tool execution was blocked by the application budget"
-                                    ),
-                                },
-                                "recovery": "stop",
-                            }
+                        try:
+                            arguments = json.loads(
+                                call.arguments
+                            )
 
-                            force_final = True
-
-                        else:
-                            outcome = run_tool_safely(
+                            decision = execution_budget.admit(
                                 name=call.name,
                                 raw_arguments=call.arguments,
-                                dispatch=dispatch_tool,
-                                max_attempts=2,
                             )
-                            result = outcome.result
-                            force_final = (outcome.decision == "stop")
-                            for event in outcome.events:
-
-                                trace.emit(
-                                    event["event"],
-                                    turn=turn,
-                                    tool_name=call.name,
-                                    call_id=call.call_id,
-                                    attempt=event["attempt"],
-                                    error_code=event.get(
-                                        "error_code"
-                                    ),
-                                )
 
                             trace.emit(
-                                "tool_recovery_decided",
+                                "budget_checked",
                                 turn=turn,
                                 tool_name=call.name,
                                 call_id=call.call_id,
-                                decision=outcome.decision,
-                                attempts=outcome.attempts,
+                                allowed=decision.allowed,
+                                reason=decision.reason,
+                                calls_used=decision.calls_used,
                             )
 
-                            if call.name == "review_constant":
+                            if not decision.allowed:
+                                result = {
+                                    "ok": False,
+                                    "error": {
+                                        "code": decision.reason,
+                                        "message": (
+                                            "Tool execution was blocked by the application budget"
+                                        ),
+                                    },
+                                    "recovery": "stop",
+                                }
+
+                                force_final = True
+
+                            else:
+                                outcome = run_tool_safely(
+                                    name=call.name,
+                                    raw_arguments=call.arguments,
+                                    dispatch=dispatch_tool,
+                                    max_attempts=2,
+                                )
+                                result = outcome.result
+                                force_final = (outcome.decision == "stop")
+                                for event in outcome.events:
+
+                                    trace.emit(
+                                        event["event"],
+                                        turn=turn,
+                                        tool_name=call.name,
+                                        call_id=call.call_id,
+                                        attempt=event["attempt"],
+                                        error_code=event.get(
+                                            "error_code"
+                                        ),
+                                    )
 
                                 trace.emit(
-                                    "claim_reviewed",
+                                    "tool_recovery_decided",
                                     turn=turn,
+                                    tool_name=call.name,
                                     call_id=call.call_id,
-                                    name=arguments.get("name"),
-                                    status=result.get("status"),
-                                    evidence_count=result.get(
-                                        "evidence_total",
-                                        0,
-                                    ),
+                                    decision=outcome.decision,
+                                    attempts=outcome.attempts,
                                 )
 
-                    except (ValueError, TypeError):
-                        result = {
-                            "ok": False,
-                            "error": "Invalid arguments",
-                        }
+                                if call.name == "review_constant":
 
-                    except Exception:
-                        result = {
-                            "ok": False,
-                            "error": "Tool execution failed",
-                        }
+                                    trace.emit(
+                                        "claim_reviewed",
+                                        turn=turn,
+                                        call_id=call.call_id,
+                                        name=arguments.get("name"),
+                                        status=result.get("status"),
+                                        evidence_count=result.get(
+                                            "evidence_total",
+                                            0,
+                                        ),
+                                    )
+
+                        except (ValueError, TypeError):
+                            result = {
+                                "ok": False,
+                                "error": "Invalid arguments",
+                            }
+
+                        except Exception:
+                            result = {
+                                "ok": False,
+                                "error": "Tool execution failed",
+                            }
 
                     output, context_metadata = (
                         context_budget.prepare(
