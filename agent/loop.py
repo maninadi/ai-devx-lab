@@ -15,6 +15,7 @@ from agent.week2_review import (FinalStatus, FinalReview, tool_choice_for_turn, 
 from agent.tool_recovery import run_tool_safely
 from agent.execution_budget import BudgetPolicy, BudgetDecision, ExecutionBudget
 from agent.cost_accounting import CostLedger, TokenRates
+from agent.agent_state import AgentPhase, AgentStateMachine
 
 TOOLS = [
     {
@@ -346,6 +347,7 @@ def run_agent(
             output_per_million=Decimal("1.60"),
         ),
     )
+    state_machine = AgentStateMachine()
 
     def dispatch_tool(name: str, arguments: dict):
 
@@ -364,6 +366,25 @@ def run_agent(
             repo_root=repo_root,
         )
 
+    def move_state(
+        target: AgentPhase,
+        reason: str,
+        turn: int,
+    ) -> None:
+
+        transition = state_machine.move(
+            target,
+            reason,
+        )
+
+        trace.emit(
+            "agent_state_transition",
+            turn=turn,
+            sequence=transition.sequence,
+            from_state=transition.source.value,
+            to_state=transition.target.value,
+            reason=transition.reason,
+        )
     previous_response_id = None
     next_input = task
 
@@ -377,6 +398,17 @@ def run_agent(
     print(f"[trace] File: {trace.path}")
 
     try:
+        initial_phase = (
+            AgentPhase.FINAL_REQUEST
+            if max_turns == 1
+            else AgentPhase.MODEL_REQUEST
+        )
+
+        move_state(
+            initial_phase,
+            "run_started",
+            turn=0,
+        )
         force_final = False
         for turn in range(1, max_turns + 1):
 
@@ -387,6 +419,11 @@ def run_agent(
             )
 
             if execution_budget.expired():
+                move_state(
+                    AgentPhase.FINISHED,
+                    "deadline_exceeded",
+                    turn,
+                )
                 trace.emit(
                     "budget_exhausted",
                     turns=turn,
@@ -406,18 +443,44 @@ def run_agent(
                     "could be completed."
                 )
 
+            must_finalize = (
+                force_final
+                or execution_budget.should_finalize()
+                or cost_ledger.should_finalize(
+                    max_cost_usd=max_cost_usd,
+                    reserve_usd=cost_reserve_usd,
+                )
+                or turn == max_turns
+            )
+            if (
+                must_finalize
+                and state_machine.phase
+                in (AgentPhase.MODEL_REQUEST, AgentPhase.TOOL_EXECUTION)
+            ):
+
+                move_state(
+                    AgentPhase.FINAL_REQUEST,
+                    "finalization_required",
+                    turn
+                )
+
             if execution_budget.should_finalize():
                 force_final = True
+
+            if (state_machine.phase == AgentPhase.FINAL_REQUEST):
+                tool_choice = "none"
+            else:
+                tool_choice = tool_choice_for_turn(
+                    turn=turn,
+                    max_turns=max_turns,
+                )
 
             request = {
                 "model": model,
                 "instructions": INSTRUCTIONS,
                 "input": next_input,
                 "tools": TOOLS,
-                "tool_choice": ("none" if force_final else tool_choice_for_turn(
-                    turn=turn,
-                    max_turns=max_turns,
-                )),
+                "tool_choice": tool_choice,
                 "max_output_tokens": 1600,
                 "store": True,
             }
@@ -521,7 +584,24 @@ def run_agent(
                 if item.type == "function_call"
             ]
 
+            if state_machine.phase == AgentPhase.FINAL_REQUEST and calls:
+                move_state(
+                    AgentPhase.FINISHED,
+                    "unexpected_tools_during_finalization",
+                    turn,
+                )
+                return (
+                    "ABSTAIN: The model requested tools during finalization, which is not allowed. Inspect the execution trace."
+                )
+
             if calls:
+
+                if state_machine.phase == AgentPhase.MODEL_REQUEST:
+                    move_state(
+                        AgentPhase.TOOL_EXECUTION,
+                        "model_requested_tools",
+                        turn,
+                    )
 
                 results = []
 
@@ -587,6 +667,11 @@ def run_agent(
                                 }
 
                                 force_final = True
+                                move_state(
+                                    AgentPhase.FINAL_REQUEST,
+                                    "tool_or_budget_finalization",
+                                    turn,
+                                )
 
                             else:
                                 outcome = run_tool_safely(
@@ -617,6 +702,20 @@ def run_agent(
                                     call_id=call.call_id,
                                     decision=outcome.decision,
                                     attempts=outcome.attempts,
+                                )
+
+                                move_state(
+                                    (
+                                        AgentPhase.FINAL_REQUEST
+                                        if force_final
+                                        else AgentPhase.MODEL_REQUEST
+                                    ),
+                                    (
+                                        "tool_or_budget_finalization"
+                                        if force_final
+                                        else "tool_results_ready"
+                                    ),
+                                    turn,
                                 )
 
                                 if call.name == "review_constant":
@@ -744,6 +843,12 @@ def run_agent(
                     turns=turn,
                 )
 
+                move_state(
+                    AgentPhase.ANSWER_REVIEW,
+                    "model_answer_received",
+                    turn,
+                )
+
                 final_review = review_final_answer(
                     answer=answer,
                     ledger=evidence_ledger,
@@ -755,6 +860,16 @@ def run_agent(
                     status=final_review.status.value,
                     accepted=final_review.accepted,
                     reason=final_review.reason,
+                )
+
+                move_state(
+                    AgentPhase.FINISHED,
+                    (
+                        "answer_accepted"
+                        if final_review.accepted
+                        else "answer_rejected"
+                    ),
+                    turn,
                 )
 
                 if final_review.accepted:

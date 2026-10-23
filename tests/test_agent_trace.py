@@ -79,6 +79,85 @@ def realistic_usage(input_tokens, cached_tokens, output_tokens, reasoning_tokens
     )
 
 
+def assert_transition_path(events, phases):
+    transitions = [event for event in events if event["event"] == "agent_state_transition"]
+    assert [
+        (event["from_state"], event["to_state"])
+        for event in transitions
+    ] == list(zip(phases, phases[1:]))
+    assert [event["sequence"] for event in transitions] == list(range(1, len(phases)))
+
+
+@pytest.mark.parametrize("scenario, phases", [
+    ("direct", ["ready", "model_request", "answer_review", "finished"]),
+    ("tools", ["ready", "model_request", "tool_execution", "model_request", "answer_review", "finished"]),
+    ("failure", ["ready", "model_request", "tool_execution", "final_request", "answer_review", "finished"]),
+])
+def test_agent_transition_paths(tmp_path, monkeypatch, scenario, phases):
+    (tmp_path / "pricing.md").write_text("Gold discount: 15%")
+    trace_dir = tmp_path / "traces"
+    abstention = "ABSTAIN: No source evidence could be collected."
+    client = FakeClient(
+        tool_requests=0 if scenario == "direct" else 1,
+        final_answer=None if scenario == "tools" else abstention,
+    )
+    calls = []
+    execute_tool = agent_loop.execute_tool
+
+    def dispatch(**kwargs):
+        calls.append(kwargs)
+        if scenario == "failure":
+            raise PermissionError()
+        return execute_tool(**kwargs)
+
+    monkeypatch.setattr(agent_loop, "execute_tool", dispatch)
+    answer = run_agent(
+        task="Explain Gold discounts", repo_root=tmp_path,
+        client=client, trace_dir=trace_dir,
+    )
+    events = [json.loads(line) for line in next(trace_dir.glob("*.jsonl")).read_text().splitlines()]
+    assert_transition_path(events, phases)
+    assert len(calls) == (0 if scenario == "direct" else 1)
+    assert events[-1]["status"] == ("cited" if scenario == "tools" else "abstained")
+    if scenario == "tools":
+        assert answer == "- Gold customers receive a 15% discount. [[pricing.md:L1-L1]]"
+        assert any(event["event"] == "answer_provenance_checked" and event["provenance_ok"] for event in events)
+    else:
+        assert answer == abstention
+    if scenario == "failure":
+        assert client.responses.requests[-1]["tool_choice"] == "none"
+        recovery = next(event for event in events if event["event"] == "tool_recovery_decided")
+        assert recovery["decision"] == "stop"
+        assert recovery["attempts"] == 1
+
+
+def test_unexpected_finalization_tool_is_not_dispatched(tmp_path, monkeypatch):
+    trace_dir = tmp_path / "traces"
+    client = FakeClient(tool_requests=2)
+    calls = []
+
+    def dispatch(**kwargs):
+        calls.append(client.responses.counter)
+        raise PermissionError()
+
+    monkeypatch.setattr(agent_loop, "execute_tool", dispatch)
+    answer = run_agent(
+        task="Explain Gold discounts", repo_root=tmp_path,
+        client=client, trace_dir=trace_dir,
+    )
+    assert calls == [1]
+    assert len(client.responses.requests) == 2
+    assert client.responses.requests[-1]["tool_choice"] == "none"
+    assert answer.startswith("ABSTAIN:")
+    events = [json.loads(line) for line in next(trace_dir.glob("*.jsonl")).read_text().splitlines()]
+    assert_transition_path(events, [
+        "ready", "model_request", "tool_execution", "final_request", "finished",
+    ])
+    transitions = [event for event in events if event["event"] == "agent_state_transition"]
+    assert transitions[-1]["reason"] == "unexpected_tools_during_finalization"
+    assert [event["call_id"] for event in events if event["event"] == "tool_attempted"] == ["call_001"]
+
+
 def test_agent_records_execution_trace(tmp_path):
 
     repo_root = tmp_path / "repo"
