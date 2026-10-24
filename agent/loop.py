@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from decimal import Decimal
 from time import perf_counter
+from uuid import uuid4
 
 from openai import OpenAI
 
@@ -16,6 +17,7 @@ from agent.tool_recovery import run_tool_safely
 from agent.execution_budget import BudgetPolicy, BudgetDecision, ExecutionBudget
 from agent.cost_accounting import CostLedger, TokenRates
 from agent.agent_state import AgentPhase, AgentStateMachine
+from agent.checkpoint import CheckpointStore, ToolBatchJournal, ToolCall
 
 TOOLS = [
     {
@@ -349,6 +351,16 @@ def run_agent(
     )
     state_machine = AgentStateMachine()
 
+    checkpoint_run_id = uuid4().hex
+
+    checkpoint_store = CheckpointStore(
+        Path(".agent-checkpoints") / f"{checkpoint_run_id}.json"
+    )
+
+    journal = ToolBatchJournal(
+        store=checkpoint_store,
+    )
+
     def dispatch_tool(name: str, arguments: dict):
 
         if name == "review_constant":
@@ -602,10 +614,27 @@ def run_agent(
                         "model_requested_tools",
                         turn,
                     )
+                    journal.begin(
+                        run_id=checkpoint_run_id,
+                        response_id=response.id,
+                        turn=turn,
+                        calls=[
+                            ToolCall(
+                                call_id=call.call_id,
+                                name=call.name,
+                                arguments=call.arguments,
+                            )
+                            for call in calls
+                        ],
+                    )
 
                 results = []
 
                 for call in calls:
+
+                    journal.start_call(
+                        call.call_id
+                    )
                     if cost_limit_reached:
 
                         result = {
@@ -796,16 +825,19 @@ def run_agent(
                             output.encode("utf-8")
                         ),
                     )
-
+                    journal.complete_call(
+                        call.call_id,
+                        output
+                    )
                     results.append({
                         "type": "function_call_output",
                         "call_id": call.call_id,
                         "output": output,
                     })
 
+                persisted_outputs = journal.finish()
                 previous_response_id = response.id
-                next_input = results
-
+                next_input = persisted_outputs
                 continue
 
             answer = response.output_text.strip()
