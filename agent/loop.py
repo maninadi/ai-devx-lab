@@ -1,3 +1,5 @@
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,7 @@ from agent.execution_budget import BudgetPolicy, BudgetDecision, ExecutionBudget
 from agent.cost_accounting import CostLedger, TokenRates
 from agent.agent_state import AgentPhase, AgentStateMachine
 from agent.checkpoint import CheckpointStore, ToolBatchJournal, ToolCall
+from agent.run_recovery import RunSnapshot, RunSnapshotStore
 
 TOOLS = [
     {
@@ -341,6 +344,12 @@ def run_agent(
             finalization_reserve_seconds=15,
         )
     )
+    original_deadline_utc = (
+        datetime.now(timezone.utc)
+        + timedelta(
+            seconds=execution_budget.remaining_seconds()
+        )
+    )
     cost_ledger = CostLedger(
         model="gpt-4.1-mini",
         rates=TokenRates(
@@ -354,11 +363,19 @@ def run_agent(
     checkpoint_run_id = uuid4().hex
 
     checkpoint_store = CheckpointStore(
-        Path(".agent-checkpoints") / f"{checkpoint_run_id}.json"
+        repo_root
+        / ".agent-checkpoints"
+        / f"{checkpoint_run_id}.json"
     )
 
     journal = ToolBatchJournal(
         store=checkpoint_store,
+    )
+
+    run_snapshot_store = RunSnapshotStore(
+        repo_root
+        / ".agent-checkpoints"
+        / f"{checkpoint_run_id}.run.json"
     )
 
     def dispatch_tool(name: str, arguments: dict):
@@ -399,6 +416,7 @@ def run_agent(
         )
     previous_response_id = None
     next_input = task
+    pending_snapshot: RunSnapshot | None = None
 
     trace.emit(
         "run_started",
@@ -497,12 +515,22 @@ def run_agent(
                 "store": True,
             }
 
+            started = perf_counter()
+
             if previous_response_id:
                 request["previous_response_id"] = (
                     previous_response_id
                 )
 
-            started = perf_counter()
+            if pending_snapshot is not None:
+                run_snapshot_store.save(
+                    replace(
+                        pending_snapshot,
+                        model_request_started=True,
+                    )
+                )
+
+                pending_snapshot = None
 
             response = client.responses.create(
                 **request
@@ -696,11 +724,6 @@ def run_agent(
                                 }
 
                                 force_final = True
-                                move_state(
-                                    AgentPhase.FINAL_REQUEST,
-                                    "tool_or_budget_finalization",
-                                    turn,
-                                )
 
                             else:
                                 outcome = run_tool_safely(
@@ -710,7 +733,9 @@ def run_agent(
                                     max_attempts=2,
                                 )
                                 result = outcome.result
-                                force_final = (outcome.decision == "stop")
+                                force_final = (
+                                    force_final or outcome.decision == "stop"
+                                )
                                 for event in outcome.events:
 
                                     trace.emit(
@@ -731,20 +756,6 @@ def run_agent(
                                     call_id=call.call_id,
                                     decision=outcome.decision,
                                     attempts=outcome.attempts,
-                                )
-
-                                move_state(
-                                    (
-                                        AgentPhase.FINAL_REQUEST
-                                        if force_final
-                                        else AgentPhase.MODEL_REQUEST
-                                    ),
-                                    (
-                                        "tool_or_budget_finalization"
-                                        if force_final
-                                        else "tool_results_ready"
-                                    ),
-                                    turn,
                                 )
 
                                 if call.name == "review_constant":
@@ -838,8 +849,70 @@ def run_agent(
                 persisted_outputs = journal.finish()
                 previous_response_id = response.id
                 next_input = persisted_outputs
-                continue
+                move_state(
+                    (
+                        AgentPhase.FINAL_REQUEST
+                        if force_final
+                        else AgentPhase.MODEL_REQUEST
+                    ),
+                    (
+                        "tool_or_budget_finalization"
+                        if force_final
+                        else "tool_results_ready"
+                    ),
+                    turn,
+                )
+                snapshot = RunSnapshot(
+                    version=1,
+                    run_id=checkpoint_run_id,
+                    response_id=response.id,
+                    turn=turn,
+                    phase=state_machine.phase.value,
+                    transitions=[
+                        {
+                            "sequence": item.sequence,
+                            "source": item.source.value,
+                            "target": item.target.value,
+                            "reason": item.reason,
+                        }
+                        for item in state_machine.history
+                    ],
+                    deadline_utc=(
+                        original_deadline_utc.isoformat()
+                    ),
+                    calls_used=execution_budget.calls_used,
+                    request_counts=dict(
+                        execution_budget.request_counts
+                    ),
+                    cost_state={
+                        "model": cost_ledger.model,
+                        "response_ids": sorted(
+                            cost_ledger.response_ids
+                        ),
+                        "response_count": (
+                            cost_ledger.response_count
+                        ),
+                        "unknown_usage_count": (
+                            cost_ledger.unknown_usage_count
+                        ),
+                        "input_tokens": (
+                            cost_ledger.input_tokens
+                        ),
+                        "cached_input_tokens": (
+                            cost_ledger.cached_input_tokens
+                        ),
+                        "output_tokens": (
+                            cost_ledger.output_tokens
+                        ),
+                        "estimated_cost_usd": str(
+                            cost_ledger.estimated_cost_usd
+                        ),
+                    },
+                )
 
+                run_snapshot_store.save(snapshot)
+                pending_snapshot = snapshot
+                continue
             answer = response.output_text.strip()
 
             if answer:
