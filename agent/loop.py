@@ -630,8 +630,15 @@ def run_agent(
                     "unexpected_tools_during_finalization",
                     turn,
                 )
+                trace.emit(
+                    "run_finished",
+                    status="abstained",
+                    reason="unexpected_tools_during_finalization",
+                    turns=turn,
+                )
                 return (
-                    "ABSTAIN: The model requested tools during finalization, which is not allowed. Inspect the execution trace."
+                    "ABSTAIN: The model requested tools during finalization,"
+                    " which is not allowed. Inspect the execution trace."
                 )
 
             if calls:
@@ -941,12 +948,6 @@ def run_agent(
                         "warnings:",
                         verification["issues"],
                     )
-
-                trace.emit(
-                    "run_finished",
-                    status="completed",
-                    turns=turn,
-                )
 
                 move_state(
                     AgentPhase.ANSWER_REVIEW,
