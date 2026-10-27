@@ -17,6 +17,7 @@ from agent.run_recovery import (
     RunSnapshotStore,
     restore_run,
 )
+from agent.working_memory import MemoryCapsuleStore
 
 
 def tool(call_id, path):
@@ -171,6 +172,35 @@ def test_multi_tool_batch_is_durable_and_final_reviewed(
     assert snapshot.calls_used == 2
     assert snapshot.model_request_started is True
     assert snapshot.cost_state["response_count"] == 1
+
+    memory_paths = list(
+        (repo / ".agent-checkpoints").glob(
+            "*.memory.json"
+        )
+    )
+
+    assert len(memory_paths) == 1
+
+    capsule = MemoryCapsuleStore(
+        memory_paths[0]
+    ).load()
+
+    assert capsule.run_id == snapshot.run_id
+    assert capsule.response_id == "resp-1"
+    assert capsule.turn == 1
+
+    assert capsule.unique_evidence == 2
+    assert capsule.omitted_evidence == 0
+
+    assert {
+        item.path
+        for item in capsule.recent_evidence
+    } == {"pricing.md", "policy.md"}
+
+    assert (
+        0 < capsule.context_chars_used
+        <= capsule.context_chars_limit
+    )
 
     trace = events(repo)
 

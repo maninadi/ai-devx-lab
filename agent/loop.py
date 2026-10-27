@@ -21,6 +21,8 @@ from agent.cost_accounting import CostLedger, TokenRates
 from agent.agent_state import AgentPhase, AgentStateMachine
 from agent.checkpoint import CheckpointStore, ToolBatchJournal, ToolCall
 from agent.run_recovery import RunSnapshot, RunSnapshotStore
+from agent.working_memory import WorkingMemory, MemoryCapsuleStore
+
 
 TOOLS = [
     {
@@ -336,6 +338,7 @@ def run_agent(
 
     evidence_ledger = EvidenceLedger()
     literal_index = LiteralFactIndex()
+    working_memory = WorkingMemory(max_recent=5)
     execution_budget = ExecutionBudget(
         BudgetPolicy(
             max_tool_calls=8,
@@ -376,6 +379,12 @@ def run_agent(
         repo_root
         / ".agent-checkpoints"
         / f"{checkpoint_run_id}.run.json"
+    )
+
+    memory_store = MemoryCapsuleStore(
+        repo_root
+        / ".agent-checkpoints"
+        / f"{checkpoint_run_id}.memory.json"
     )
 
     def dispatch_tool(name: str, arguments: dict):
@@ -805,7 +814,7 @@ def run_agent(
 
                     if recorded:
                         latest = evidence_ledger.records[-1]
-
+                        working_memory.observe(latest)
                         trace.emit(
                             "evidence_recorded",
                             turn=turn,
@@ -868,6 +877,24 @@ def run_agent(
                         else "tool_results_ready"
                     ),
                     turn,
+                )
+                capsule = working_memory.capsule(
+                    run_id=checkpoint_run_id,
+                    response_id=response.id,
+                    turn=turn,
+                    context_chars_used=context_budget.used_chars,
+                    context_chars_limit=context_budget.policy.max_total_tool_chars,
+                )
+                memory_store.save(capsule)
+                trace.emit(
+                    "memory_capsule_saved",
+                    turn=turn,
+                    response_id=response.id,
+                    retained=len(capsule.recent_evidence),
+                    unique_evidence=capsule.unique_evidence,
+                    omitted=capsule.omitted_evidence,
+                    context_chars_used=capsule.context_chars_used,
+                    pressure=capsule.pressure,
                 )
                 snapshot = RunSnapshot(
                     version=1,
