@@ -204,6 +204,14 @@ def test_multi_tool_batch_is_durable_and_final_reviewed(
 
     trace = events(repo)
 
+    recommendations = [
+        event["recommendation"]
+        for event in trace
+        if event["event"] == "compaction_boundary_reviewed"
+    ]
+
+    assert recommendations == ["monitor"]
+
     assert len([
         event
         for event in trace

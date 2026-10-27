@@ -22,6 +22,7 @@ from agent.agent_state import AgentPhase, AgentStateMachine
 from agent.checkpoint import CheckpointStore, ToolBatchJournal, ToolCall
 from agent.run_recovery import RunSnapshot, RunSnapshotStore
 from agent.working_memory import WorkingMemory, MemoryCapsuleStore
+from agent.context_reconstruction import compaction_advice
 
 
 TOOLS = [
@@ -895,6 +896,15 @@ def run_agent(
                     omitted=capsule.omitted_evidence,
                     context_chars_used=capsule.context_chars_used,
                     pressure=capsule.pressure,
+                )
+                recommendation = compaction_advice(capsule)
+                trace.emit(
+                    "compaction_boundary_reviewed",
+                    turn=turn,
+                    response_id=response.id,
+                    recommendation=recommendation,
+                    pressure=capsule.pressure,
+                    omitted_evidence=capsule.omitted_evidence,
                 )
                 snapshot = RunSnapshot(
                     version=1,
