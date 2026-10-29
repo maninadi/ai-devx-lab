@@ -20,6 +20,11 @@ from agent.working_memory import (
     MemoryCapsuleStore,
 )
 
+from agent.evidence_archive import (
+    EvidenceArchiveStore,
+    restore_evidence_archive,
+)
+
 
 @dataclass
 class LocalContextAudit:
@@ -53,6 +58,7 @@ def reconstruct_local_context(
     memory_store: MemoryCapsuleStore,
     *,
     context_policy: ContextPolicy,
+    evidence_store: EvidenceArchiveStore | None = None,
 ) -> LocalContextAudit:
     """Audit local evidence at a safe boundary; never resume a model."""
 
@@ -92,6 +98,24 @@ def reconstruct_local_context(
 
     # Day 22 keeps only a bounded number of references.
     # Missing references prevent full index reconstruction.
+    if evidence_store is not None:
+        ledger = restore_evidence_archive(
+            repo_root,
+            evidence_store,
+            capsule,
+        )
+
+        budget = ToolContextBudget(context_policy)
+        budget.used_chars = capsule.context_chars_used
+
+        return LocalContextAudit(
+            run_id=snapshot.run_id,
+            response_id=snapshot.response_id,
+            turn=snapshot.turn,
+            evidence_ledger=ledger,
+            context_budget=budget,
+        )
+
     if capsule.omitted_evidence:
         raise RecoveryBlocked(
             "Capsule omitted evidence; full index unavailable"

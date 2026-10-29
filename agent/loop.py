@@ -23,6 +23,7 @@ from agent.checkpoint import CheckpointStore, ToolBatchJournal, ToolCall
 from agent.run_recovery import RunSnapshot, RunSnapshotStore
 from agent.working_memory import WorkingMemory, MemoryCapsuleStore
 from agent.context_reconstruction import compaction_advice
+from agent.evidence_archive import EvidenceArchiveStore, capture_evidence_archive
 
 
 TOOLS = [
@@ -386,6 +387,12 @@ def run_agent(
         repo_root
         / ".agent-checkpoints"
         / f"{checkpoint_run_id}.memory.json"
+    )
+
+    evidence_archive_store = EvidenceArchiveStore(
+        repo_root
+        / ".agent-checkpoints"
+        / f"{checkpoint_run_id}.evidence.json"
     )
 
     def dispatch_tool(name: str, arguments: dict):
@@ -879,6 +886,25 @@ def run_agent(
                     ),
                     turn,
                 )
+
+                archive = capture_evidence_archive(
+                    repo_root,
+                    run_id=checkpoint_run_id,
+                    response_id=response.id,
+                    turn=turn,
+                    ledger=evidence_ledger,
+                )
+
+                evidence_archive_store.save(archive)
+
+                trace.emit(
+                    "evidence_archive_saved",
+                    turn=turn,
+                    response_id=response.id,
+                    records=len(archive.records),
+                    observed_files=len(archive.file_hashes),
+                )
+
                 capsule = working_memory.capsule(
                     run_id=checkpoint_run_id,
                     response_id=response.id,
