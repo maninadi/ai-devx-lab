@@ -75,6 +75,11 @@ def archive_boundary(tmp_path, monkeypatch):
             client=client,
         )
 
+    monkeypatch.setattr(
+        RunSnapshotStore,
+        "save",
+        original_save,
+    )
     assert len(client.requests) == 2
 
     snapshot_store, checkpoint_store = stores(repo)
