@@ -24,6 +24,10 @@ from agent.run_recovery import RunSnapshot, RunSnapshotStore
 from agent.working_memory import WorkingMemory, MemoryCapsuleStore
 from agent.context_reconstruction import compaction_advice
 from agent.evidence_archive import EvidenceArchiveStore, capture_evidence_archive
+from agent.recovery_manifest import (
+    RecoveryManifestStore,
+    seal_recovery_boundary,
+)
 
 
 TOOLS = [
@@ -393,6 +397,12 @@ def run_agent(
         repo_root
         / ".agent-checkpoints"
         / f"{checkpoint_run_id}.evidence.json"
+    )
+
+    manifest_store = RecoveryManifestStore(
+        repo_root
+        / ".agent-checkpoints"
+        / f"{checkpoint_run_id}.manifest.json"
     )
 
     def dispatch_tool(name: str, arguments: dict):
@@ -981,6 +991,23 @@ def run_agent(
                 )
 
                 run_snapshot_store.save(snapshot)
+                manifest = seal_recovery_boundary(
+                    repo_root,
+                    manifest_store,
+                    run_snapshot_store,
+                    checkpoint_store,
+                    memory_store,
+                    evidence_archive_store,
+                )
+
+                trace.emit(
+                    "recovery_manifest_sealed",
+                    turn=turn,
+                    response_id=response.id,
+                    git_head=manifest.git_head,
+                    source_tree_sha256=manifest.source_tree_sha256,
+                    artifacts=len(manifest.artifact_sha256),
+                )
                 pending_snapshot = snapshot
                 continue
             answer = response.output_text.strip()

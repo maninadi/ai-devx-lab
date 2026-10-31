@@ -25,6 +25,11 @@ from agent.evidence_archive import (
     restore_evidence_archive,
 )
 
+from agent.recovery_manifest import (
+    RecoveryManifestStore,
+    verify_recovery_manifest,
+)
+
 
 @dataclass
 class LocalContextAudit:
@@ -59,8 +64,22 @@ def reconstruct_local_context(
     *,
     context_policy: ContextPolicy,
     evidence_store: EvidenceArchiveStore | None = None,
+    manifest_store: RecoveryManifestStore | None = None,
 ) -> LocalContextAudit:
     """Audit local evidence at a safe boundary; never resume a model."""
+
+    if manifest_store is not None:
+        if evidence_store is None:
+            raise RecoveryBlocked(
+                "Manifest verification requires evidence archive"
+            )
+
+        verify_recovery_manifest(
+            repo_root,
+            manifest_store,
+            snapshot_store,
+            checkpoint_store,
+        )
 
     snapshot = snapshot_store.load()
 
