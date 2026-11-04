@@ -92,6 +92,6 @@ Tests: {
   "answer": "Token preflight verifies and prepares authentication tokens before executing actions in a coding agent."
 }
 
-Git commit: [hash]
+Git commit: [75c01f8]
 
 **Key takeaway:** A reliable coding agent should measure its proposed model input, enforce a configured capacity policy, and prevent oversized requests from reaching generation.
