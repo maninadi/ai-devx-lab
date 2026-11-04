@@ -1,0 +1,61 @@
+
+# Day 29 — Model/API Fundamentals
+
+Status: In progress
+
+## Objective
+Understand model request/response semantics and
+validate structured API responses before using them.
+
+## Official resources
+- https://developers.openai.com/api/docs/guides/text
+- https://developers.openai.com/api/docs/guides/migrate-to-responses
+- https://developers.openai.com/api/docs/guides/conversation-state
+- https://developers.openai.com/api/docs/guides/token-counting
+
+## Implementation
+- agent/model_protocol.py
+- tests/test_model_protocol.py
+- scripts/day29_probe.py
+
+## Real API observation
+Model: gpt-4.1-mini-2025-04-14
+Response ID: resp_0f40267ff885943a016ae92fbb594887d2bb3b51b189cae366
+Status: completed
+Output item types:  [
+    "message"
+  ]
+Input tokens: 29
+Cached input tokens: 0
+Output tokens: 2
+Reasoning tokens, if reported: 0
+Final text:READY
+
+## Key distinctions
+1. API response versus final answer:
+2. Response ID versus idempotency:
+3. Output text versus structured output items:
+4. Missing usage versus zero usage:
+5. Provider response versus application contract:
+
+## Reflection
+1. Why can a completed response still require
+   another agent turn?
+
+2. Why shouldn't an agent assume every output
+   item is user-facing text?
+
+3. What would happen if the API returned an
+   incomplete response after using tokens?
+
+4. How does this connect to the Day 19–28
+   crash-recovery architecture?
+
+## Test results
+Protocol tests:
+Full pytest suite:
+
+## Next integration idea
+Describe how ModelReply could eventually be
+introduced into agent/loop.py without changing
+existing tool-call or recovery behavior.
