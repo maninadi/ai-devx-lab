@@ -14,6 +14,21 @@ from agent.generation_attempt_journal import (
     AttemptState,
     GenerationAttemptJournal,
 )
+from agent.recovery_generations import GenerationStore
+
+
+@pytest.fixture
+def current_generation(monkeypatch):
+    generation = NS(
+        run_id=uuid4().hex,
+        generation_id=uuid4().hex,
+    )
+    monkeypatch.setattr(
+        GenerationStore,
+        "current",
+        lambda self, repo_root: generation,
+    )
+    return generation
 
 
 class FakeClient:
@@ -60,6 +75,9 @@ def make_gateway(
     journal_root: Path,
     operation_id: str,
 ):
+    identity_root = journal_root / "identities"
+    identity_root.mkdir(exist_ok=True)
+
     return build_durable_gateway(
         client,
         operation_id=operation_id,
@@ -67,6 +85,9 @@ def make_gateway(
         context_window=1000,
         safety_reserve_tokens=100,
         budget=DeadlineBudget.start(10),
+        repo_root=journal_root,
+        checkpoint_root=journal_root / "checkpoints",
+        identity_root=identity_root,
     )
 
 
@@ -106,7 +127,7 @@ def test_response_requires_intent(tmp_path):
         )
 
 
-def test_success_persists_response(tmp_path):
+def test_success_persists_response(tmp_path, current_generation):
     operation_id = uuid4().hex
     client = FakeClient()
 
@@ -126,7 +147,9 @@ def test_success_persists_response(tmp_path):
     assert client.generation_calls == 1
 
 
-def test_crash_after_submission_remains_ambiguous(tmp_path):
+def test_crash_after_submission_remains_ambiguous(
+    tmp_path, current_generation
+):
     operation_id = uuid4().hex
     client = FakeClient(fail_generation=True)
 
@@ -145,7 +168,7 @@ def test_crash_after_submission_remains_ambiguous(tmp_path):
     assert client.generation_calls == 1
 
 
-def test_restart_blocks_automatic_replay(tmp_path):
+def test_restart_blocks_automatic_replay(tmp_path, current_generation):
     operation_id = uuid4().hex
     client = FakeClient(fail_generation=True)
 
@@ -177,7 +200,7 @@ def test_invalid_operation_id_rejected(tmp_path):
 
 
 def test_failed_intent_write_prevents_generation(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, current_generation
 ):
     operation_id = uuid4().hex
     client = FakeClient()
