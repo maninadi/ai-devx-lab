@@ -15,6 +15,12 @@ from agent.generation_attempt_journal import (
     GenerationAttemptJournal,
 )
 
+from agent.attempt_identity import (
+    AttemptIdentity,
+    AttemptIdentityStore,
+)
+from agent.recovery_generations import GenerationStore
+
 
 def build_durable_gateway(
     client: Any,
@@ -24,7 +30,11 @@ def build_durable_gateway(
     context_window: int,
     budget: DeadlineBudget,
     safety_reserve_tokens: int = 1024,
+    repo_root: Path,
+    checkpoint_root: Path,
+    identity_root: Path,
 ) -> DurableGenerationGateway:
+
     journal = GenerationAttemptJournal(
         journal_root,
         operation_id,
@@ -35,6 +45,25 @@ def build_durable_gateway(
         raise RuntimeError(
             "Existing operation requires reconciliation"
         )
+
+    # Bind this operation to the currently verified
+    # recovery generation before any provider submission.
+    generation = GenerationStore(
+        checkpoint_root
+    ).current(repo_root)
+
+    identity_store = AttemptIdentityStore(
+        identity_root,
+        operation_id,
+    )
+
+    identity_store.save_new(
+        AttemptIdentity(
+            operation_id=operation_id,
+            run_id=generation.run_id,
+            generation_id=generation.generation_id,
+        )
+    )
 
     def on_stage(stage: str) -> None:
         if stage == "generation_submission_started":
