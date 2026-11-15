@@ -86,9 +86,6 @@ locking boundary.
   selection and provider submission. Do not hold the filesystem lock
   across an external API call.
 
-## Quiz score
-
-Not assessed; no quiz answers have been graded.
 
 ## Reflection
 
