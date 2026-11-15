@@ -55,6 +55,7 @@ def countable_request(
             "temperature",
             "top_p",
             "parallel_tool_calls",
+            "extra_headers",
         }
     )
 

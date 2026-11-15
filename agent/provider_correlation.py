@@ -23,6 +23,7 @@ class ProviderCorrelation:
 class ProviderCorrelationStore:
     def __init__(self, root: Path, operation_id: str):
         UUID(hex=operation_id)
+        self.operation_id = operation_id
         self.root = Path(root)
         self.path = self.root / f"{operation_id}.json"
 
@@ -31,7 +32,21 @@ class ProviderCorrelationStore:
             return None
 
         data = json.loads(self.path.read_text("utf-8"))
-        return ProviderCorrelation(**data)
+        record = ProviderCorrelation(**data)
+        if record.operation_id != self.operation_id:
+            raise CorrelationConflict(
+                "Correlation operation identity mismatch"
+            )
+        if not isinstance(record.client_request_id, str) or not record.client_request_id:
+            raise CorrelationConflict(
+                "Invalid correlation client request ID"
+            )
+
+        if record.response_id is not None and (not isinstance(record.response_id, str) or not record.response_id):
+            raise CorrelationConflict(
+                "Invalid provider response ID"
+            )
+        return record
 
     def _write(self, record: ProviderCorrelation) -> None:
         self.root.mkdir(parents=True, exist_ok=True)

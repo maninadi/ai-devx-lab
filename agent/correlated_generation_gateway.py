@@ -7,15 +7,21 @@ from agent.provider_correlation import (
     ProviderCorrelationStore,
 )
 
+from agent.generation_fencing import GenerationFencing
+
 
 class CorrelatedGenerationGateway:
     def __init__(
         self,
         gateway: Any,
         correlation: ProviderCorrelationStore,
+        fencing: GenerationFencing | None = None,
+        token: int | None = None,
     ):
         self.gateway = gateway
         self.correlation = correlation
+        self.fencing = fencing
+        self.token = token
 
     def create(self, request: dict) -> Any:
         record = self.correlation.load()
@@ -25,15 +31,34 @@ class CorrelatedGenerationGateway:
                 "Correlation must be prepared first"
             )
 
-        # The underlying gateway must enforce Day 40
-        # admission and durable submission intent.
-        result = self.gateway.create(request)
+        headers = request.get("extra_headers", {})
 
-        response_id = getattr(result, "id", None)
-        if not response_id:
+        if "X-Client-Request-Id" in headers:
+            if headers["X-Client-Request-Id"] != record.client_request_id:
+                raise RuntimeError(
+                    "conflicting client request ID"
+                )
+
+        coorelated_request = {
+            **request,
+            "extra_headers": {
+                **headers,
+                "X-Client-Request-Id": record.client_request_id,
+            },
+        }
+
+        response, decision = self.gateway.create(coorelated_request)
+
+        response_id = getattr(response, "id", None)
+
+        if not isinstance(response_id, str) or not response_id:
             raise RuntimeError(
                 "Provider response ID unavailable"
             )
 
-        self.correlation.record_response(response_id)
-        return result
+        if self.fencing is None or self.token is None:
+            self.correlation.record_response(response_id)
+        else:
+            self.fencing.guarded(self.token, lambda: self.correlation.record_response(response_id))
+
+        return response, decision
