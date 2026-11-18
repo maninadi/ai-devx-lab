@@ -328,3 +328,71 @@ def test_full_stack_admitted_generation_and_recovery(setup, generation_setup):
     assert len(counting_requests) == 2  # Preflight precedes admission.
     assert reopened_journal.load() == receipt
     assert reopened_correlation.load() == saved_correlation
+
+
+def test_invalid_output_preserves_provider_receipt(
+    tmp_path,
+):
+    from agent.policy_structured_gateway import (
+        PolicyStructuredGateway,
+    )
+    from agent.structured_response_gateway import (
+        StructuredResponseGateway,
+    )
+    from agent.output_failure_policy import OutputAction
+
+    op, journal, correlation = make_operation(tmp_path)
+    calls = []
+
+    class FakeProvider:
+        def create(self, request):
+            journal.record_submission_intent()
+            calls.append(request)
+
+            response = SimpleNamespace(
+                id="resp_invalid",
+                status="completed",
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        content=[
+                            SimpleNamespace(
+                                type="output_text",
+                                text="not-json",
+                            )
+                        ],
+                    )
+                ],
+            )
+            return response, "preflight-ok"
+
+    durable = DurableGenerationGateway(
+        FakeProvider(),
+        journal,
+    )
+    correlated = CorrelatedGenerationGateway(
+        durable,
+        correlation,
+    )
+
+    gateway = PolicyStructuredGateway(
+        StructuredResponseGateway(correlated)
+    )
+
+    result = gateway.create({
+        "model": "fake",
+        "input": "Hello",
+    })
+
+    assert result.policy.action == OutputAction.QUARANTINE
+    assert len(calls) == 1
+
+    receipt = journal.load()
+    assert receipt.response_id == "resp_invalid"
+    assert receipt.response_status == "completed"
+    assert correlation.load().response_id == "resp_invalid"
+
+    recovery = inspect(op, journal, correlation)
+    assert recovery.disposition == (
+        RecoveryDisposition.INSPECT_RESPONSE
+    )
