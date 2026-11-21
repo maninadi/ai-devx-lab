@@ -88,7 +88,7 @@ def build_stack(
         ),
         operation_id=operation_id,
         journal=journal,
-        sink=events.append if sink is None else sink,
+        sink=sink if sink is not None else events.append,
     )
 
     return gateway, journal, events, calls
@@ -273,3 +273,49 @@ def test_missing_receipt_is_not_invented(tmp_path):
         ReceiptState.NOT_RECORDED
     )
     assert events[0].response_id is None
+
+
+def test_day46_durable_sink_integration(tmp_path):
+    from agent.durable_output_diagnostics import (
+        DurableOutputDiagnosticStore,
+    )
+
+    # build_stack generates its own operation ID.
+    # Use a delegating sink to initialize the store
+    # from the first event's verified identity.
+    stores = []
+
+    def durable_sink(event):
+        store = DurableOutputDiagnosticStore(
+            tmp_path / "diagnostics",
+            event.operation_id,
+        )
+        store.write(event)
+        stores.append(store)
+
+    gateway, journal, events, calls = build_stack(
+        tmp_path,
+        sink=durable_sink,
+    )
+
+    result = gateway.create({
+        "model": "fake",
+        "input": "private question",
+    })
+
+    assert len(calls) == 1
+    assert result.policy.action == (
+        OutputAction.DELIVER_TO_EVIDENCE_GATE
+    )
+    assert len(stores) == 1
+
+    persisted = stores[0].load()
+    assert persisted.operation_id == journal.operation_id
+    assert persisted.response_id == "resp_day45"
+
+    # Reopen from disk, simulating a new process.
+    reopened = DurableOutputDiagnosticStore(
+        tmp_path / "diagnostics",
+        journal.operation_id,
+    )
+    assert reopened.load() == persisted
